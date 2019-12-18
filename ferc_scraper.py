@@ -8,6 +8,9 @@ from tkinter import *
 import tkinter as tk
 import datetime as dt
 
+from scrapy.utils.response import open_in_browser
+from scrapy.http import HtmlResponse
+
 tod = dt.datetime.today()
 theDate = "{}/{:02d}/{}".format(tod.month, tod.day, tod.year)
 download_link = "https://elibrary.ferc.gov/idmws"
@@ -23,6 +26,9 @@ class WritableStringVar(tk.StringVar):
 class BrickSetSpider(scrapy.Spider):
     name = "ferc_spider"
     start_urls = ['https://elibrary.ferc.gov/idmws/search/fercgensearch.asp']
+    docstart = 0
+    doccounter = 200
+    docslimit = 200
 
     def parse(self, response):
         query = FormRequest.from_response(response,
@@ -30,9 +36,9 @@ class BrickSetSpider(scrapy.Spider):
                                               "FROMdt": theDate,
                                               "TOdt": theDate,
                                               "firstDt": "1/1/1904",
-                                              "LastDt": "12/31/2017",
-                                              "DocsStart": "0",
-                                              "DocsLimit": "200",
+                                              "LastDt": "12/31/2037",
+                                              "DocsStart": str(self.docstart),
+                                              "DocsLimit": str(self.docslimit),
                                               "SortSpec": "filed_date desc accession_num asc",
                                               "datefield": "filed_date",
                                               "dFROM": theDate,
@@ -52,9 +58,12 @@ class BrickSetSpider(scrapy.Spider):
                                               "textsearch": "",
                                               "description": "description",
                                               "fulltext": "fulltext",
-                                              "DocsCount": "200"
+                                              "DocsCount": str(self.doccounter)
                                           },
         callback=self.parse_query)
+        query.meta["DocsStart"] = str(self.docstart)
+        query.meta["DocsCount"] = str(self.doccounter)
+        query.meta["DocsLimit"] = str(self.docslimit)
         yield query
 
     def parse_query(self, response):
@@ -78,18 +87,63 @@ class BrickSetSpider(scrapy.Spider):
             fileid = column5_link.split('=')[1]
             fold = path + name
             uniq_path = fold + '/' + fileid + ".pdf"
+            print (fold)
             if os.path.isdir(fold):
                 if not os.path.exists(uniq_path):
                     urllib.request.urlretrieve(column5_link, uniq_path)
                     popup = True
-                    #pop_items += pop_items + name + '_' + fileid + "/n "
                     pop_items.append(name + '_' + fileid)
             else:
                 os.mkdir(fold)
                 urllib.request.urlretrieve(column5_link, fold + '/' + fileid + ".pdf")
                 popup = True
-                #pop_items += pop_items + name + '_' + fileid + "/n "
                 pop_items.append(name + '_' + fileid)
+
+        next_pages = response.xpath('//a[text()="NextPage"]').extract()
+
+        docstart = int(response.meta["DocsStart"])
+        doccounter = int(response.meta["DocsCount"])
+        docslimit = int(response.meta["DocsLimit"])
+
+        if len(next_pages) > 0:
+            docstart += doccounter
+            docslimit += doccounter
+            new_query = FormRequest(url="https://elibrary.ferc.gov/IDMWS/search/results.asp",
+                                    formdata={
+                                        "FROMdt": theDate,
+                                        "TOdt": theDate,
+                                        "firstDt": "1/1/1904",
+                                        "LastDt": "12/31/2037",
+                                        "DocsStart": str(docstart),
+                                        "DocsLimit": str(docslimit),
+                                        "SortSpec": "filed_date desc accession_num asc",
+                                        "datefield": "filed_date",
+                                        "dFROM": theDate,
+                                        "dTO": theDate,
+                                        "dYEAR": "1",
+                                        "dMONTH": "1",
+                                        "dDAY": "1",
+                                        "date": "between",
+                                        "NotCategories": "submittal, issuance",
+                                        "category": "submittal",
+                                        "libraryall": "",
+                                        "library": "oil",
+                                        "docket": "",
+                                        "subdock_radio": "all_subdockets",
+                                        "class": "999",
+                                        "type": "Tariff Filing",
+                                        "textsearch": "",
+                                        "description": "description",
+                                        "fulltext": "fulltext",
+                                        "DocsCount": str(doccounter)
+                                    },
+                                    callback=self.parse_query, dont_filter=True)
+            # pass the relevant meta data for another loop of "Next page"
+            new_query.meta["DocsStart"] = str(docstart)
+            new_query.meta["DocsCount"] = str(doccounter)
+            new_query.meta["DocsLimit"] = str(docslimit)
+            # Issue the POST request to the server
+            yield new_query
 
         if popup:
             root = Tk()
